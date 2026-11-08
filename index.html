@@ -11,11 +11,34 @@
 <meta property="og:url" content="https://withsoe.netlify.app/">
 <meta property="og:title" content="Gyeongju.">
 <meta property="og:description" content="경주여행 🫶">
-<meta property="og:image" content="https://withsoe.netlify.app/og2.jpg">
+<meta property="og:image" content="https://withsoe.netlify.app/og3.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
+<script>
+/* 카카오톡 인앱 브라우저로 열리면 기본 브라우저(아이폰은 Safari)로 넘깁니다 */
+(function(){
+  var ua=navigator.userAgent||"";
+  if(!/KAKAOTALK/i.test(ua)) return;
+  var target="kakaotalk://web/openExternal?url="+encodeURIComponent(location.href);
+  window.__openExternal=function(){ location.href=target; };
+  location.href=target;
+  document.addEventListener("DOMContentLoaded",function(){
+    var b=document.createElement("div");
+    b.className="kakao-bar";
+    b.innerHTML='<span>Safari에서 열면 더 편하게 볼 수 있어요</span><button type="button" onclick="__openExternal()">Safari로 열기</button>';
+    document.body.prepend(b);
+  });
+})();
+</script>
+<style>
+.kakao-bar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:10px max(16px,env(safe-area-inset-right,0px)) 10px max(16px,env(safe-area-inset-left,0px));
+  background:#232127;color:#F6F3EE;font:600 13px/1.3 "Pretendard",system-ui,sans-serif}
+.kakao-bar button{flex:none;border:0;border-radius:999px;padding:8px 12px;background:#9B87F5;color:#fff;font:700 13px/1 "Pretendard",system-ui,sans-serif}
+</style>
+
 <style>:root{color-scheme:only light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
 </head>
 <body>
