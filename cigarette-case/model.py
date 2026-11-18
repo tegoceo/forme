@@ -1,334 +1,287 @@
-"""벽부형 담배 케이스 (섹터1: 담배갑 2개 / 섹터2: 라이터 1개)
+"""벽부형 담배 케이스 v2 — 틸트아웃(앞으로 기울어지며 열리는) 구조
 
-좌표계 (단위 mm)
-  x : 폭 (왼쪽 → 오른쪽)
-  y : 깊이 (0 = 벽에 붙는 뒷면, + 방향 = 앞쪽)
-  z : 높이 (0 = 바닥)
+구성
+  body  : 함체. 벽에 양면테이프로 부착. 상단에 푸시래치 설치 공간.
+  lid   : 뚜껑(빈). 앞판 + 좌우 측면판 + 바닥 + 칸막이 + 뒤턱.
+          담배갑 2개와 라이터가 앞판 안쪽에 기대어 있다가 뚜껑과 함께 기울어져 나옴.
+  eagle : 독수리 부조. 별도 출력 후 앞판에 접착 (1.75 필라멘트 토막 2개로 위치 맞춤).
 
-구성 부품
-  body.stl : 본체 (뒷면을 베드에 두고 출력)
-  door.stl : 하단 힌지식 앞문 + 독수리 부조 (뒷면을 베드에 두고 출력)
-  힌지 핀  : 1.75 mm 필라멘트 토막 (또는 Ø2 mm 금속 핀)
-  자석     : Ø6 × 2 mm 네오디뮴 4개 (본체 2, 문 2)
+결합 구조 (외부에서 보이지 않음)
+  - 측면판 바깥쪽 보스 2개(피벗 P, 가이드 G) → 함체 측벽 안쪽 홈에 끼워짐.
+  - 피벗 P 를 중심으로 회전. 가이드 G 는 원호 홈을 따라 움직여 경로/각도를 제한.
+  - 원호 홈 끝 = 최대 개방각(THETA_MAX), 반대쪽 끝 = 조립 진입각(THETA_ENTRY).
+  - 조립: 푸시래치를 달기 전에 뚜껑을 THETA_ENTRY 각도로 앞에서 밀어 넣고 닫는다.
+    래치를 설치하면 뚜껑이 진입각까지 눌리지 않으므로 빠지지 않는다.
 
-사용법
-  python3 model.py                 # 기본(일반 담배갑) 프리셋
-  python3 model.py --preset universal
+좌표계 (mm): x 폭, y 깊이(0 = 벽면, + = 앞), z 높이.
+각도: 양수 = 열림(앞판 위쪽이 앞으로), 음수 = 안쪽으로 눌림.
+
+사용법:  python3 model.py
 """
 
-import argparse
 import math
 import os
+import sys
 
 import numpy as np
 import manifold3d as m3d
-from scipy.ndimage import gaussian_filter
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from eagle import eagle_heightmap, heightfield_solid  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 파라미터
 # ---------------------------------------------------------------------------
-PRESETS = {
-    # 국제 표준 20개비 플립탑 갑 (예: 88 x 55 x 23 mm)
-    "regular": dict(pack_w=55.0, pack_d=23.0, pack_h=88.0),
-    # 일반 갑 + 슬림(100mm 개비) 갑까지 수용하는 범용 높이
-    "universal": dict(pack_w=55.0, pack_d=23.0, pack_h=108.0),
-}
+PACK_W, PACK_D, PACK_H = 55.0, 23.0, 87.0     # 실측 담배갑
+LIGHTER_W, LIGHTER_D, LIGHTER_H = 25.0, 15.0, 82.0
 
-LIGHTER_W, LIGHTER_D, LIGHTER_H = 25.0, 15.0, 82.0  # BIC 맥시급 라이터 수용
+# 푸시래치 (몸체 기준, 제품 확정 후 수정)
+LATCH_L, LATCH_W, LATCH_H = 39.0, 27.0, 15.0  # 깊이 x 폭 x 높이
+LATCH_FRONT_GAP = 4.0                          # 래치 앞면 ~ 앞판 뒷면 (눌림 여유)
 
-WALL = 2.4        # 측벽 (0.4 노즐 6라인)
-BACK = 3.0        # 뒷판 (양면테이프 부착면)
-TOP = 3.0         # 윗판
-BOTTOM = 4.0      # 바닥판 (힌지 축 높이와 동일)
-DIVIDER = 2.0     # 섹터 칸막이
-DOOR_T = 4.0      # 문 두께
-GAP = 0.4         # 문-프레임 유격
+WALL = 4.0          # 함체 측벽 (홈 2.0 + 잔여 2.0)
+BACK = 3.0          # 뒷판
+TOP = 4.0           # 윗판 (래치 고정면)
+BOT = 3.0           # 바닥판
+T_F = 3.0           # 뚜껑 앞판
+TC = 2.4            # 뚜껑 측면판
+DIV = 2.0           # 칸막이
+SIDE_GAP = 0.5      # 측면판 ~ 측벽
+GAP = 0.5           # 회전 여유
+TOP_GAP = 0.8       # 앞판 윗면 ~ 윗판
 
-CLEAR_W = 4.0     # 담배갑 2개 폭 여유 (합계)
-CLEAR_D = 3.0     # 깊이 여유
-CLEAR_H = 5.0     # 높이 여유 (자석 보스 아래, 갑을 앞으로 기울여 꺼낼 때 여유 포함)
+S1_W = 2 * PACK_W + 3.0      # 담배 칸 폭
+S2_W = LIGHTER_W + 3.0       # 라이터 칸 폭
+POCKET_D = PACK_D + 2.0      # 칸 깊이 (앞판 뒷면 ~ 뒤턱)
+LIP_T, LIP_H = 2.0, 12.0     # 뒤턱 (닫힌 상태에서 갑이 뒤로 넘어가지 않게)
 
-KNUCKLE_R = 4.0   # 힌지 너클 반경 (Ø8)
-KNUCKLE_CUT = 4.5 # 상대 너클 회전 여유 반경
-KNUCKLE_N = 5     # 너클 개수 (본체-문-본체-문-본체)
-KNUCKLE_GAP = 0.4 # 너클 축방향 유격
-PIN_D = 2.1       # 핀 구멍 (1.75 필라멘트용)
+PIV_BACK = 5.0      # 피벗이 앞판 뒷면보다 뒤쪽으로 들어간 거리
+Z_P = 13.0          # 피벗 높이
+R_C = 86.0          # 측면판 상단 원호 반경 (피벗 중심)
+R_PB = 12.0         # 앞판 하단 곡면 반경 (피벗 중심)
+CHEEK_BELOW = 5.5   # 피벗 아래 측면판 여유
 
-MAG_D, MAG_T = 6.3, 2.2  # Ø6x2 자석 포켓 (압입/접착)
-BOSS_W, BOSS_H = 10.0, 9.0
+BOSS_R = 3.0        # 보스 Ø6
+GROOVE_R = 3.15     # 홈 폭 6.3
+GROOVE_DEPTH = 2.0
+BOSS_LEN = SIDE_GAP + GROOVE_DEPTH - 0.2
+R_G = 17.0          # 가이드 보스 반경
 
-SCREW_HOLES = True       # 테이프 + 나사 병행 고정용 접시머리 구멍
-SCREW_D, SCREW_HEAD_D = 4.2, 8.5
+THETA_MAX = 35.0    # 최대 개방각
+THETA_OVER = -2.0   # 래치 누름(오버트래블)
+THETA_ENTRY = -5.0  # 조립 진입각 (래치 미설치 시에만 도달)
+PHI_G = 180.0 + THETA_ENTRY   # 닫힘 상태에서 가이드 보스 방향 (피벗 기준, +y 에서 반시계)
 
-SEG = 96  # 원 분할 수
+HEADER_CLEAR = 1.0
+EAGLE_SPAN = 100.0
+PEG_D = 2.0         # 1.75 필라멘트 정렬핀 구멍
+
+CS_SEG = 128
 
 
 # ---------------------------------------------------------------------------
-# 기본 도형 헬퍼
+# 도형 헬퍼
 # ---------------------------------------------------------------------------
+def rect(y0, y1, z0, z1):
+    return m3d.CrossSection.square([y1 - y0, z1 - z0]).translate([y0, z0])
+
+
+def circle(cy, cz, r):
+    return m3d.CrossSection.circle(r, CS_SEG).translate([cy, cz])
+
+
+def union2d(items):
+    return m3d.CrossSection.batch_boolean(list(items), m3d.OpType.Add)
+
+
+def rot2d(cs, p, deg_open):
+    """피벗 p 기준 회전. deg_open>0 이면 열림 방향(시계방향)."""
+    return cs.translate([-p[0], -p[1]]).rotate(-deg_open).translate([p[0], p[1]])
+
+
+def extrude_x(cs, x0, x1):
+    """(y,z) 단면을 x 방향으로 돌출"""
+    return cs.extrude(x1 - x0).rotate([90, 0, 90]).translate([x0, 0, 0])
+
+
 def box(x0, x1, y0, y1, z0, z1):
     return m3d.Manifold.cube([x1 - x0, y1 - y0, z1 - z0]).translate([x0, y0, z0])
 
 
-def cyl_x(x0, x1, y, z, r):
-    """x축 방향 원기둥"""
-    c = m3d.Manifold.cylinder(x1 - x0, r, r, SEG)  # z축 방향으로 생성
-    return c.rotate([0, 90, 0]).translate([x0, y, z])
+def cyl_x(x0, x1, y, z, r, seg=96):
+    return m3d.Manifold.cylinder(x1 - x0, r, r, seg).rotate([0, 90, 0]).translate([x0, y, z])
 
 
-def cyl_y(y0, y1, x, z, r, r2=None):
-    """y축 방향 원기둥 (r→r2 원뿔 가능)"""
+def cyl_y(y0, y1, x, z, r, r2=None, seg=96):
     r2 = r if r2 is None else r2
-    c = m3d.Manifold.cylinder(y1 - y0, r, r2, SEG)
-    return c.rotate([-90, 0, 0]).translate([x, y0, z])
+    return m3d.Manifold.cylinder(y1 - y0, r, r2, seg).rotate([-90, 0, 0]).translate([x, y0, z])
 
 
-def prism_x(x0, x1, pts_yz):
-    """yz 평면 다각형을 x 방향으로 돌출"""
-    cs = m3d.CrossSection([pts_yz])
-    return cs.extrude(x1 - x0).rotate([90, 0, 90]).translate([x0, 0, 0])
-
-
-# ---------------------------------------------------------------------------
-# 독수리 부조 (높이맵 → 솔리드)
-# ---------------------------------------------------------------------------
-def eagle_heightmap(span=104.0, res=0.25):
-    """양식화된 독수리 높이맵 (날개를 위로 펼친 정면 자세, 머리는 옆을 봄)
-
-    설계 좌표(날개폭 약 128)로 그린 뒤 span(mm)에 맞게 축소한다.
-    반환: xs, zs (mm, 중심 0), H (문 앞면 기준 높이 mm, 바탕은 음수)
-    """
-    design_span = 128.0
-    k = span / design_span
-    r = res / k                                     # 설계 좌표에서의 격자 간격
-    xs_d = np.arange(-68, 68 + r, r)
-    zs_d = np.arange(-40, 58 + r, r)
-    X, Z = np.meshgrid(xs_d, zs_d)
-    H = np.full(X.shape, -1.0)
-
-    def dome(cx, cz, rx, rz, ang, h_edge, h_peak, ridge=0.0, taper=0.0):
-        ca, sa = math.cos(ang), math.sin(ang)
-        u = ((X - cx) * ca + (Z - cz) * sa) / rx
-        v = (-(X - cx) * sa + (Z - cz) * ca) / rz
-        if taper:  # 끝(u>0) 쪽으로 갈수록 폭이 좁아지는 깃털
-            v = v / np.clip(1 - taper * np.clip(u, 0, 1), 0.25, 1)
-        d2 = u * u + v * v
-        prof = np.sqrt(np.clip(1.0 - d2, 0, 1))
-        h = h_edge + (h_peak - h_edge) * prof
-        if ridge:
-            h = h + ridge * np.exp(-(v * rz / 0.45) ** 2) * np.clip(1 - np.abs(u), 0, 1)
-        np.maximum(H, np.where(d2 < 1.0, h, -1.0), out=H)
-
-    def feather(bx, bz, ang, length, width, h_edge, h_peak, ridge=0.22, taper=0.35):
-        cx = bx + math.cos(ang) * length / 2
-        cz = bz + math.sin(ang) * length / 2
-        dome(cx, cz, length / 2, width / 2, ang, h_edge, h_peak, ridge, taper)
-
-    lerp = lambda a, b, t: a + (b - a) * t
-
-    for side in (1, -1):
-        P = lambda x, z: (side * x, z)
-        A = lambda deg: math.radians(deg) if side > 0 else math.pi - math.radians(deg)
-
-        # 날개 골격(앞전): 어깨 → 손목 → 날개끝
-        shoulder, wrist, tip = (7, 9), (30, 27), (44, 35)
-
-        # 칼깃(첫째날개깃): 손목에서 부채꼴로 뻗는 긴 '손가락' 깃 7장
-        for i in range(7):
-            t = i / 6
-            bx, bz = lerp(26, 41, t), lerp(24, 33, t)
-            feather(*P(bx, bz), A(lerp(-22, 38, t)), lerp(24, 27, math.sin(t * math.pi)) + 3 * t,
-                    5.6, 0.8, 1.5)
-        # 둘째날개깃: 팔 아래로 늘어지는 깃 9장
-        for i in range(9):
-            t = i / 8
-            bx, bz = lerp(8, 27, t), lerp(7, 23, t)
-            feather(*P(bx, bz), A(lerp(-78, -30, t)), lerp(17, 23, t), 5.6, 0.9, 1.6)
-        # 큰날개덮깃
-        for i in range(10):
-            t = i / 9
-            bx, bz = lerp(8, 37, t), lerp(9, 31, t)
-            feather(*P(bx, bz), A(lerp(-70, 8, t)), lerp(10, 13, t), 5.0, 1.7, 2.4)
-        # 작은날개덮깃 (비늘)
-        for i in range(9):
-            t = i / 8
-            bx, bz = lerp(7, 33, t), lerp(10, 31, t)
-            feather(*P(bx, bz), A(lerp(-60, -5, t)), lerp(6, 7.5, t), 4.4, 2.4, 3.0, ridge=0, taper=0.15)
-        # 앞전 융기
-        for t in np.linspace(0, 1, 14):
-            if t < 0.62:
-                s = t / 0.62
-                ax, az = lerp(shoulder[0], wrist[0], s), lerp(shoulder[1], wrist[1], s)
-            else:
-                s = (t - 0.62) / 0.38
-                ax, az = lerp(wrist[0], tip[0], s), lerp(wrist[1], tip[1], s)
-            dome(*P(ax, az + 1.0), 3.0, 2.3, A(35), 2.8, 3.3)
-
-        # 꼬리깃 (가운데 1장 + 좌우 3장씩)
-        for j, deg in enumerate((-90, -80, -70, -60)):
-            if j == 0 and side < 0:
-                continue
-            feather(*P(0.8 * j, -12), A(deg), 19 - 1.2 * j, 5.4, 1.0, 1.9)
-        # 다리(깃털 바지) + 발톱
-        dome(*P(4.2, -11), 3.0, 4.6, A(-75), 2.5, 3.2)
-        for j in range(3):
-            feather(*P(4.6 + (j - 1) * 1.5, -15.5), A(-90 + (j - 1) * 25), 3.4, 1.3, 2.5, 2.9, 0, 0.5)
-
-    # 몸통
-    dome(0, -3, 7.2, 11.5, 0, 2.5, 3.8)
-    dome(0, 5, 7.6, 7.5, 0, 2.9, 4.0)
-    # 목 깃(들쭉날쭉한 가장자리)
-    for j in range(7):
-        a = math.radians(-150 + j * 20)
-        feather(1.0, 12.0, a, 6.0, 3.0, 3.0, 3.6, 0, 0.5)
-    # 머리 (오른쪽을 봄) + 이마 융기 + 갈고리 부리
-    dome(1.6, 15.8, 4.8, 3.9, math.radians(-8), 3.3, 4.5)
-    dome(3.4, 17.4, 2.6, 0.9, math.radians(-10), 4.0, 4.7)        # 눈썹뼈
-    dome(6.6, 15.0, 2.8, 1.7, math.radians(-15), 3.4, 4.2)        # 윗부리
-    dome(8.4, 13.6, 1.4, 0.9, math.radians(-70), 3.3, 3.9)        # 부리 갈고리
-    # 가슴 비늘 무늬 (홈)
-    for r_ in range(4):
-        for c_ in range(-1, 2):
-            cx, cz = c_ * 3.8 + (r_ % 2) * 1.9 - 0.95, 6 - r_ * 3.5
-            dd = np.hypot(X - cx, Z - cz)
-            groove = (np.abs(dd - 2.1) < 0.3) & (Z < cz) & (H > 2.6)
-            H[groove] -= 0.35
-    # 눈, 부리선
-    H[np.hypot(X - 3.6, Z - 16.2) < 0.8] -= 0.55
-    H[(np.abs((Z - 15.0) + 0.25 * (X - 6.0)) < 0.25) & (X > 5.0) & (X < 8.5)] -= 0.3
-
-    H = gaussian_filter(H, sigma=0.22 / r)         # 약 0.22 mm 스무딩
-    H = np.maximum(H, -0.6)                        # 바탕: 문 표면 아래로 묻힘
-    H = gaussian_filter(H, sigma=0.12 / r)
-    xs, zs = xs_d * k, zs_d * k
-    # 높이도 살짝 축소 (최대 약 4 mm)
-    return xs, zs, H * min(1.0, 0.9 + 0.1 * k)
-
-
-def heightfield_solid(xs, zs, H, base=-0.6):
-    """높이맵(H) 을 x-z 평면, 돌출 방향 +y 인 폐쇄 솔리드로 변환"""
-    nz, nx = H.shape
-    top = np.stack(np.meshgrid(xs, zs), -1).reshape(-1, 2)
-    vt = np.column_stack([top[:, 0], H.reshape(-1), top[:, 1]])  # (x, y=h, z)
-    vb = np.column_stack([top[:, 0], np.full(len(top), base - 0.4), top[:, 1]])
-    verts = np.vstack([vt, vb]).astype(np.float32)
-    off = len(vt)
-    idx = np.arange(nx * nz).reshape(nz, nx)
-    a, b, c, d = idx[:-1, :-1], idx[:-1, 1:], idx[1:, :-1], idx[1:, 1:]
-    tri_top = np.concatenate([np.stack([a, c, b], -1).reshape(-1, 3),
-                              np.stack([b, c, d], -1).reshape(-1, 3)])
-    tri_bot = tri_top[:, ::-1] + off
-    # 측면
-    ring = np.concatenate([idx[0, :], idx[1:, -1], idx[-1, -2::-1], idx[-2:0:-1, 0]])
-    nxt = np.roll(ring, -1)
-    side = np.concatenate([np.stack([ring, nxt, nxt + off], -1),
-                           np.stack([ring, nxt + off, ring + off], -1)])
-    tris = np.concatenate([tri_top, tri_bot, side]).astype(np.uint32)
-    mesh = m3d.Mesh(vert_properties=verts, tri_verts=tris)
-    solid = m3d.Manifold(mesh)
-    if solid.status() != m3d.Error.NoError:
-        # 방향이 반대인 경우 뒤집기
-        mesh = m3d.Mesh(vert_properties=verts, tri_verts=tris[:, ::-1].copy())
-        solid = m3d.Manifold(mesh)
-    return solid
+def rot3d(man, p, deg_open):
+    """3D 회전 (x축, 피벗 p=(y,z)). deg_open>0 = 열림"""
+    return man.translate([0, -p[0], -p[1]]).rotate([-deg_open, 0, 0]).translate([0, p[0], p[1]])
 
 
 # ---------------------------------------------------------------------------
-# 모델 생성
+# 치수 계산
 # ---------------------------------------------------------------------------
-def build(preset="regular"):
-    p = PRESETS[preset]
-    s1_w = 2 * p["pack_w"] + CLEAR_W                 # 섹터1 내폭
-    s2_w = LIGHTER_W + 5.0                           # 섹터2 내폭
-    in_d = p["pack_d"] + CLEAR_D                     # 내부 깊이
-    in_h = max(p["pack_h"], LIGHTER_H) + CLEAR_H + BOSS_H  # 내부 높이
+def layout():
+    L = {}
+    L["Wi"] = 2 * TC + 2 * SIDE_GAP + S1_W + DIV + S2_W
+    L["W"] = L["Wi"] + 2 * WALL
+    L["D"] = max(BACK + LATCH_L + LATCH_FRONT_GAP + T_F,
+                 BACK + 8.0 + POCKET_D + LIP_T + T_F)
+    D = L["D"]
+    L["P"] = (D - T_F - PIV_BACK, Z_P)
+    L["y_rear"] = D - T_F - POCKET_D - LIP_T
+    L["z_floor"] = Z_P + 2.0
+    L["lx0"] = WALL + SIDE_GAP
+    L["lx1"] = L["W"] - WALL - SIDE_GAP
 
-    W = WALL + s1_w + DIVIDER + s2_w + WALL
-    D = BACK + in_d + DOOR_T                         # 앞면 y 좌표
-    Ht = BOTTOM + in_h + TOP
-    zi0, zi1 = BOTTOM, BOTTOM + in_h                 # 내부 z 범위
-    xi0, xi1 = WALL, W - WALL
-    yd = D - DOOR_T                                  # 문 뒷면 y
-    axis_y, axis_z = D, BOTTOM                       # 힌지 축
-
-    # 너클 구간 (본체 = 짝수, 문 = 홀수)
-    seg_w = W / KNUCKLE_N
-    segs = [(i * seg_w, (i + 1) * seg_w) for i in range(KNUCKLE_N)]
-
-    # ----------------------------- 본체 -----------------------------------
-    body = box(0, W, 0, D, 0, Ht) - box(xi0, xi1, BACK, D + 1, zi0, zi1)
-
-    # 칸막이 (문 뒤 0.5 mm 까지)
-    div_x0 = xi0 + s1_w
-    body += box(div_x0, div_x0 + DIVIDER, BACK - 0.1, yd - 0.5, zi0 - 0.1, zi1 + 0.1)
-
-    # 자석 보스 (좌상단, 우상단 모서리, 뒷판까지 이어진 기둥 → 서포트 불필요)
-    bosses = [(xi0, xi0 + BOSS_W), (xi1 - BOSS_W, xi1)]
-    mag_pts = []
-    for bx0, bx1 in bosses:
-        body += box(bx0 - 0.1, bx1, BACK - 0.1, yd, zi1 - BOSS_H, zi1 + 0.1)
-        mx, mz = (bx0 + bx1) / 2, zi1 - BOSS_H / 2
-        mag_pts.append((mx, mz))
-        body -= cyl_y(yd - MAG_T, yd + 0.1, mx, mz, MAG_D / 2)
-
-    # 너클 아래 45° 보강 (출력 시 오버행 지지)
-    body += prism_x(xi0 - 0.1, xi1 + 0.1,
-                    [(yd - 3, zi0 - 0.1), (yd, zi0 - 0.1), (yd, zi0 + 3)])
-
-    # 본체 너클
-    for i, (x0, x1) in enumerate(segs):
-        if i % 2 == 0:
-            a = x0 + (KNUCKLE_GAP / 2 if i > 0 else 0)
-            b = x1 - (KNUCKLE_GAP / 2 if i < KNUCKLE_N - 1 else 0)
-            body += cyl_x(a, b, axis_y, axis_z, KNUCKLE_R)
-    # 문 너클 회전 공간 확보
-    for i, (x0, x1) in enumerate(segs):
-        if i % 2 == 1:
-            body -= cyl_x(x0 - KNUCKLE_GAP / 2, x1 + KNUCKLE_GAP / 2, axis_y, axis_z, KNUCKLE_CUT)
-    body -= cyl_x(-1, W + 1, axis_y, axis_z, PIN_D / 2)
-
-    # 고정용 접시머리 나사 구멍 (섹터1 뒷판 상단)
-    if SCREW_HOLES:
-        sz = zi1 - BOSS_H - 12
-        for sx in (xi0 + 22, xi0 + s1_w - 22):
-            body -= cyl_y(-1, BACK + 1, sx, sz, SCREW_D / 2)
-            body -= cyl_y(BACK - (SCREW_HEAD_D - SCREW_D) / 2 - 0.01, BACK + 0.01, sx, sz,
-                          SCREW_D / 2, SCREW_HEAD_D / 2)
-
-    # ------------------------------ 문 ------------------------------------
-    dx0, dx1 = xi0 + GAP, xi1 - GAP
-    dz0, dz1 = zi0 + GAP, zi1 - GAP
-    door = box(dx0, dx1, yd, D, dz0, dz1)
-    for i, (x0, x1) in enumerate(segs):
-        if i % 2 == 1:
-            door += cyl_x(x0 + KNUCKLE_GAP / 2, x1 - KNUCKLE_GAP / 2, axis_y, axis_z, KNUCKLE_R)
-    for i, (x0, x1) in enumerate(segs):
-        if i % 2 == 0:
-            door -= cyl_x(x0 - KNUCKLE_GAP / 2, x1 + KNUCKLE_GAP / 2, axis_y, axis_z, KNUCKLE_CUT)
-    door -= cyl_x(-1, W + 1, axis_y, axis_z, PIN_D / 2)
-    for mx, mz in mag_pts:
-        door -= cyl_y(yd - 0.1, yd + MAG_T, mx, mz, MAG_D / 2)
-
-    # 독수리 부조
-    span = min(100.0, (dx1 - dx0) * 0.70)
-    xs, zs, Hm = eagle_heightmap(span=span)
-    eagle = heightfield_solid(xs, zs, Hm)
-    ez = (dz0 + dz1) / 2 - 10.0 * span / 128.0 + 2.0   # 설계 z(-31~52)의 중앙을 문 중앙에
-    eagle = eagle.translate([W / 2, D, ez])
-    door = door + eagle
-
-    info = dict(preset=preset, W=W, D=D, H=Ht, s1_w=s1_w, s2_w=s2_w, in_d=in_d, in_h=in_h,
-                knuckle_front=D + KNUCKLE_R, axis=(axis_y, axis_z),
-                door=(dx1 - dx0, dz1 - dz0), mag_pts=mag_pts)
-    return body, door, info
+    # 담배갑/라이터 (앞판 뒷면에 기댄 상태) 의 회전 궤적 최고점 → 래치 공간 하한
+    p = L["P"]
+    yb = D - T_F
+    corners = []
+    for d, h in ((PACK_D, PACK_H), (LIGHTER_D, LIGHTER_H)):
+        for y in (yb - d, yb):
+            corners.append((y - p[0], L["z_floor"] + h - p[1]))
+    r_items = max(math.hypot(*c) for c in corners)
+    L["r_items"] = r_items
+    z_hb = p[1] + max(r_items, R_C) + HEADER_CLEAR
+    L["z_latch_bot"] = z_hb
+    L["z_tu"] = z_hb + LATCH_H + 0.5          # 윗판 아랫면
+    L["H"] = L["z_tu"] + TOP
+    L["z_pt"] = L["z_tu"] - TOP_GAP           # 앞판 윗면
+    L["z_latch_c"] = L["z_tu"] - LATCH_H / 2
+    L["xc"] = L["W"] / 2
+    a = math.radians(PHI_G)
+    L["G"] = (p[0] + R_G * math.cos(a), p[1] + R_G * math.sin(a))   # 닫힘 상태 가이드 보스
+    return L
 
 
-def door_rotated(door, info, deg):
-    """힌지 축 기준으로 문을 회전 (양수 = 열림)"""
-    ay, az = info["axis"]
-    return door.translate([0, -ay, -az]).rotate([-deg, 0, 0]).translate([0, ay, az])
+# ---------------------------------------------------------------------------
+# 뚜껑 단면
+# ---------------------------------------------------------------------------
+def lid_profiles(L):
+    D, p = L["D"], L["P"]
+    panel = rect(D - T_F, D, p[1] - R_PB, L["z_pt"]) ^ (
+        circle(p[0], p[1], R_PB) + rect(D - T_F - 1, D + 1, p[1], L["z_pt"] + 1))
+    cheek = rect(L["y_rear"], D - T_F + 0.01, p[1] - CHEEK_BELOW, p[1] + R_C + 1) ^ circle(p[0], p[1], R_C)
+    floor = rect(L["y_rear"], D - T_F + 0.01, p[1] - 1.0, p[1] + 2.0)
+    lip = rect(L["y_rear"], L["y_rear"] + LIP_T, p[1] + 1.99, p[1] + 2.0 + LIP_H)
+    return dict(panel=panel, cheek=cheek, floor=floor, lip=lip)
 
 
+# ---------------------------------------------------------------------------
+# 함체
+# ---------------------------------------------------------------------------
+def build_body(L):
+    W, D, H, p = L["W"], L["D"], L["H"], L["P"]
+    prof = lid_profiles(L)
+    lid2d = union2d(prof.values()).offset(GAP, m3d.JoinType.Round)
+
+    sweep = [rot2d(lid2d, p, a) for a in np.arange(THETA_ENTRY, THETA_MAX + 0.01, 1.0)]
+    # 조립 경로: 진입각에서 앞으로 빼내는 궤적
+    ent = rot2d(lid2d, p, THETA_ENTRY)
+    sweep += [ent.translate([t, 0]) for t in np.arange(0, D + 2, 1.5)]
+    cav = union2d(sweep + [
+        rect(BACK, D + 1, p[1] - CHEEK_BELOW - 1.0, L["z_tu"]),
+        rect(BACK, p[0] - R_PB - GAP, BOT, L["z_tu"]),
+    ])
+    body = box(0, W, 0, D, 0, H) - extrude_x(cav, WALL, W - WALL)
+
+    # 측벽 안쪽 홈: 수평 진입홈(피벗+가이드 공용) + 가이드 원호홈
+    groove = [rect(L["G"][0] - 1.0, D + 1, p[1] - GROOVE_R, p[1] + GROOVE_R)]
+    for th in np.arange(THETA_ENTRY, THETA_MAX + 0.01, 0.5):
+        a = math.radians(PHI_G - th)
+        groove.append(circle(p[0] + R_G * math.cos(a), p[1] + R_G * math.sin(a), GROOVE_R))
+    groove = union2d(groove)
+    body -= extrude_x(groove, WALL - GROOVE_DEPTH, WALL + 0.01)
+    body -= extrude_x(groove, W - WALL - 0.01, W - WALL + GROOVE_DEPTH)
+
+    # 래치 위치 가이드 리브 (윗판 아래, 래치 좌우)
+    xc = L["xc"]
+    yl1 = D - T_F - LATCH_FRONT_GAP
+    for sx in (-1, 1):
+        x0 = xc + sx * (LATCH_W / 2 + 0.4)
+        body += box(min(x0, x0 + sx * 1.2), max(x0, x0 + sx * 1.2),
+                    yl1 - LATCH_L, yl1 - 12, L["z_tu"] - 3.0, L["z_tu"] + 0.1)
+
+    # 보조 고정 나사 구멍 (래치 높이, 앞에서 드라이버 접근 가능)
+    for sx in (30.0, W - 30.0):
+        z = L["z_latch_c"]
+        body -= cyl_y(-1, BACK + 1, sx, z, 2.1)
+        body -= cyl_y(BACK - 2.1, BACK + 0.01, sx, z, 2.1, 4.25)
+    return body
+
+
+# ---------------------------------------------------------------------------
+# 뚜껑 + 독수리
+# ---------------------------------------------------------------------------
+def build_lid(L):
+    D, p = L["D"], L["P"]
+    lx0, lx1 = L["lx0"], L["lx1"]
+    prof = lid_profiles(L)
+    lid = extrude_x(prof["panel"], lx0, lx1)
+    lid += extrude_x(prof["floor"], lx0, lx1)
+    lid += extrude_x(prof["lip"], lx0, lx1)
+    lid += extrude_x(prof["cheek"], lx0, lx0 + TC)
+    lid += extrude_x(prof["cheek"], lx1 - TC, lx1)
+    xd = lx0 + TC + S1_W
+    lid += extrude_x(prof["cheek"], xd, xd + DIV)
+
+    for (y, z) in (p, L["G"]):
+        lid += cyl_x(lx0 - BOSS_LEN, lx0 + 0.5, y, z, BOSS_R)
+        lid += cyl_x(lx1 - 0.5, lx1 + BOSS_LEN, y, z, BOSS_R)
+
+    # 래치 스트라이크(철판) 자리 1 mm
+    zc, xc = L["z_latch_c"], L["xc"]
+    lid -= box(xc - 10, xc + 10, D - T_F - 0.01, D - T_F + 1.0, zc - 10, min(zc + 10, L["z_pt"] + 1))
+
+    # 독수리 위치/정렬핀 구멍
+    k = EAGLE_SPAN / 128.0
+    ez = (p[1] - R_PB * 0.8 + L["z_pt"]) / 2 - 10.5 * k
+    L["eagle_z"] = ez
+    pegs = [(xc, ez - 2.3), (xc, ez + 3.9)]
+    L["pegs"] = pegs
+    for (x, z) in pegs:
+        lid -= cyl_y(D - 2.0, D + 0.1, x, z, PEG_D / 2)
+    return lid
+
+
+def build_eagle(L):
+    xs, zs, Hm = eagle_heightmap(span=EAGLE_SPAN)
+    mask = Hm > 0.2
+    Hp = np.where(mask, Hm + 0.6, -1.0)          # 0.6 mm 바탕 두께
+    sol = heightfield_solid(xs, zs, Hp, base=-1.0)
+    sol = sol ^ box(-200, 200, 0, 20, -200, 200)  # y>=0 만
+    for (x, z) in L["pegs"]:
+        sol -= cyl_y(-0.1, 2.0, x - L["xc"], z - L["eagle_z"], PEG_D / 2)
+    return sol  # 로컬: 뒷면 y=0, 중심 (0, 0)
+
+
+def items_solids(L):
+    D, zf = L["D"], L["z_floor"]
+    x = L["lx0"] + TC
+    packs = [box(x + 1.0, x + 1.0 + PACK_W, D - T_F - PACK_D, D - T_F - 0.05, zf + 0.05, zf + PACK_H),
+             box(x + 2.0 + PACK_W, x + 2.0 + 2 * PACK_W, D - T_F - PACK_D, D - T_F - 0.05, zf + 0.05, zf + PACK_H)]
+    xl = x + S1_W + DIV + 1.5
+    lighter = box(xl, xl + LIGHTER_W, D - T_F - LIGHTER_D, D - T_F - 0.05, zf + 0.05, zf + LIGHTER_H)
+    return packs, lighter
+
+
+def build_all():
+    L = layout()
+    body = build_body(L)
+    lid = build_lid(L)
+    eagle = build_eagle(L)
+    eagle_on = eagle.translate([L["xc"], L["D"], L["eagle_z"]])
+    return L, body, lid, eagle, eagle_on
+
+
+# ---------------------------------------------------------------------------
+# 저장
+# ---------------------------------------------------------------------------
 def save_stl(man, path):
     import trimesh
     mesh = man.to_mesh()
@@ -337,33 +290,36 @@ def save_stl(man, path):
     return tm
 
 
+def to_bed(man):
+    b = man.bounding_box()
+    return man.translate([-b[0], -b[1], -b[2]])
+
+
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--preset", default="regular", choices=PRESETS)
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "stl"))
-    args = ap.parse_args()
-    os.makedirs(args.out, exist_ok=True)
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stl")
+    os.makedirs(out, exist_ok=True)
+    L, body, lid, eagle, eagle_on = build_all()
 
-    body, door, info = build(args.preset)
-    # 출력 방향: 뒷면이 베드(z=0)
-    body_print = body.rotate([-90, 0, 0]).rotate([180, 0, 0])
-    b = body_print.bounding_box()
-    body_print = body_print.translate([-b[0], -b[1], -b[2]])
-    yd = info["D"] - DOOR_T
-    door_print = door.translate([0, -yd, 0]).rotate([-90, 0, 0]).rotate([180, 0, 0])
-    b = door_print.bounding_box()
-    door_print = door_print.translate([-b[0], -b[1], -b[2]])
+    parts = {
+        "body.stl": to_bed(body.rotate([90, 0, 0])),           # 뒷판이 베드
+        "lid.stl": to_bed(lid.rotate([-90, 0, 0])),            # 앞판(앞면)이 베드
+        "eagle.stl": to_bed(eagle.rotate([90, 0, 0])),         # 부조 뒷면이 베드
+    }
+    for name, man in parts.items():
+        tm = save_stl(man, os.path.join(out, name))
+        print(f"{name:10s} watertight={tm.is_watertight} vol={tm.volume / 1000:.1f}cm3 "
+              f"bbox={np.round(tm.extents, 1)} tris={len(tm.faces)}")
 
-    tb = save_stl(body_print, os.path.join(args.out, f"body_{args.preset}.stl"))
-    td = save_stl(door_print, os.path.join(args.out, f"door_{args.preset}.stl"))
-    # 미리보기용 조립 상태 (닫힘 / 열림)
-    save_stl(body + door, os.path.join(args.out, f"_assembly_closed_{args.preset}.stl"))
-    save_stl(body + door_rotated(door, info, 100), os.path.join(args.out, f"_assembly_open_{args.preset}.stl"))
-
-    print({k: (round(v, 2) if isinstance(v, float) else v) for k, v in info.items()})
-    for name, tm in (("body", tb), ("door", td)):
-        print(name, "watertight=", tm.is_watertight, "volume_cm3=", round(tm.volume / 1000, 1),
-              "bbox=", np.round(tm.extents, 1), "tris=", len(tm.faces))
+    p = L["P"]
+    packs, lighter = items_solids(L)
+    items = packs[0] + packs[1] + lighter
+    full_lid = lid + eagle_on
+    save_stl(body, os.path.join(out, "_asm_body.stl"))
+    for tag, deg in (("closed", 0.0), ("open", THETA_MAX)):
+        save_stl(rot3d(full_lid, p, deg), os.path.join(out, f"_asm_{tag}_lid.stl"))
+        save_stl(rot3d(items, p, deg), os.path.join(out, f"_asm_{tag}_items.stl"))
+    keys = ("W", "H", "D", "P", "G", "z_floor", "z_latch_bot", "z_tu", "z_pt", "r_items", "y_rear")
+    print({k: (tuple(round(v, 2) for v in L[k]) if isinstance(L[k], tuple) else round(L[k], 2)) for k in keys})
 
 
 if __name__ == "__main__":
